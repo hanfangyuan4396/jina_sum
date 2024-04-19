@@ -1,6 +1,7 @@
 # encoding:utf-8
 import json
 import os
+import html
 from urllib.parse import urlparse
 
 import requests
@@ -13,10 +14,10 @@ from plugins import *
 
 @plugins.register(
     name="JinaSum",
-    desire_priority=110,
+    desire_priority=10,
     hidden=False,
     desc="Sum url link content with jina reader and llm",
-    version="0.1",
+    version="v0.0.1",
     author="hanfangyuan",
 )
 class JinaSum(Plugin):
@@ -51,7 +52,6 @@ class JinaSum(Plugin):
             content = context.content
             if context.type != ContextType.SHARING and context.type != ContextType.TEXT:
                 return
-
             if not self._check_url(content):
                 logger.debug(f"[JinaSum] {content} not a url, skip")
                 return
@@ -61,7 +61,7 @@ class JinaSum(Plugin):
                 channel = e_context["channel"]
                 channel.send(reply, context)
 
-            target_url = content
+            target_url = html.unescape(content) # 解决公众号卡片链接校验问题，参考 https://github.com/fatwang2/sum4all/commit/b983c49473fc55f13ba2c44e4d8b226db3517c45
             jina_url = self._get_jina_url(target_url)
             response = requests.get(jina_url, timeout=60)
             response.raise_for_status()
@@ -126,8 +126,5 @@ class JinaSum(Plugin):
         return payload
 
     def _check_url(self, target_url: str):
-        # 微信官方做了校验，公众号卡片链接无法直接访问
-        if target_url.strip().startswith("https://mp.weixin.qq.com/s?__biz=") or target_url.strip().startswith("http://mp.weixin.qq.com/s?__biz="):
-            return False
         # 简单校验是否是url
         return target_url.strip().startswith("http://") or target_url.strip().startswith("https://")
