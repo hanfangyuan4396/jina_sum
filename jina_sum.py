@@ -23,8 +23,8 @@ from plugins import *
 class JinaSum(Plugin):
 
     jina_reader_base = "https://r.jina.ai"
-    open_ai_api_base = "https://api.openai.com/v1"
-    open_ai_model = "gpt-3.5-turbo"
+    open_ai_api_base = "https://api.openai.com/v1" #可以更改为oneapi地址，或者LLM的base url地址比如zhipu的是：https://open.bigmodel.cn/api/paas/v4","https://api.moonshot.cn/v1/chat/completions",
+    open_ai_model = "gpt-3.5-turbo" #更换为实际模型，如glm-4-air
     max_words = 8000
     prompt = "我需要对下面引号内文档进行总结，总结输出包括以下三个部分：\n📖 一句话总结\n🔑 关键要点,用数字序号列出3-5个文章的核心内容\n🏷 标签: #xx #xx\n请使用emoji让你的表达更生动\n\n"
     white_url_list = []
@@ -57,6 +57,16 @@ class JinaSum(Plugin):
         try:
             context = e_context["context"]
             content = context.content
+            if context is not None:   #Sam增加 用来看下context.type的值
+                if hasattr(context, 'type'):
+                    print(f"Context type: {context.type}")
+                else:
+                    print("Context does not have a 'type' attribute.")
+            else:
+                print("Context is None.")           
+            if not hasattr(context, 'type'):
+                context.type = "SHARING" # 强行赋值SHARING，但是不确定会不会有其它问题，之前没有这个赋值，所以在fastgpt使用中会报错
+                logger.warning("[JinaSum] Added default 'type' attribute to context.")              
             if context.type != ContextType.SHARING and context.type != ContextType.TEXT:
                 return
             if not self._check_url(content):
