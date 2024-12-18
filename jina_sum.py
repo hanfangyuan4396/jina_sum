@@ -32,6 +32,7 @@ class JinaSum(Plugin):
         "https://support.weixin.qq.com", # 视频号视频
         "https://channels-aladin.wxqcloud.qq.com", # 视频号音乐
     ]
+    black_group_list = []
 
     def __init__(self):
         super().__init__()
@@ -47,6 +48,7 @@ class JinaSum(Plugin):
             self.prompt = self.config.get("prompt", self.prompt)
             self.white_url_list = self.config.get("white_url_list", self.white_url_list)
             self.black_url_list = self.config.get("black_url_list", self.black_url_list)
+            self.black_group_list = self.config.get("black_group_list", self.black_group_list)
             logger.info(f"[JinaSum] inited, config={self.config}")
             self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
         except Exception as e:
@@ -57,6 +59,12 @@ class JinaSum(Plugin):
         try:
             context = e_context["context"]
             content = context.content
+            if context.get("isgroup", True):
+                msg:ChatMessage = e_context['context']['msg']
+                if msg.from_user_nickname in self.black_group_list:
+                    logger.debug(f"[JinaSum] {msg.from_user_nickname} is in black group list, skip")
+                    return
+
             if context.type != ContextType.SHARING and context.type != ContextType.TEXT:
                 return
             if not self._check_url(content):
