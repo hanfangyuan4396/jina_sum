@@ -4,6 +4,7 @@
   "open_ai_api_key":  "sk-xxx",
   "open_ai_model": "gpt-3.5-turbo",
   "max_words": 8000,
+  "auto_sum": false,
   "white_url_list": [],
   "black_url_list": ["https://support.weixin.qq.com", "https://channels-aladin.wxqcloud.qq.com"],
   "black_group_list": [],
