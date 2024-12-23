@@ -47,6 +47,9 @@ class JinaSum(Plugin):
         "auto_sum": True,
         "cache_timeout": 60,  # 缓存超时时间（秒）
         "summary_cache_timeout": 300,  # 总结结果缓存时间（5分钟）
+        "qa_prompt": "请基于以下引号内的文档内容回答用户的问题。如果问题无法从文档中得到答案，请明确说明。\n\n文档内容:\n'''{content}'''\n\n用户问题: {question}",
+        "content_cache_timeout": 300,  # 原文内容缓存时间（5分钟）
+        "qa_trigger": "问",  # 问答触发词
     }
 
     def __init__(self):
@@ -64,9 +67,10 @@ class JinaSum(Plugin):
             if not self.open_ai_api_key:
                 raise ValueError("OpenAI API key is required")
             
-            # 初始化缓存
+            # 每次启动时重置所有缓存
             self.pending_messages = {}  # 待处理消息缓存
-            self.summary_cache = {}  # 总结结果缓存
+            self.summary_cache = {}    # 总结结果缓存
+            self.content_cache = {}    # 原文缓存，用于后续问答
             
             logger.info(f"[JinaSum] inited, config={self.config}")
             self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
@@ -94,10 +98,23 @@ class JinaSum(Plugin):
                 should_auto_sum = False
                 logger.debug(f"[JinaSum] {msg.from_user_nickname} is in black group list, auto sum disabled")
 
-            # 处理文本消息（用户触发总结）
+            # 处理文本消息（用户触发总结或提问）
             if context.type == ContextType.TEXT:
                 content = content.strip()
-                if is_group and "总结" in content:
+                # 移除可能的@信息
+                if content.startswith("@"):
+                    parts = content.split(" ", 1)
+                    if len(parts) > 1:
+                        content = parts[1].strip()
+                    else:
+                        content = ""
+                
+                if content.startswith(self.qa_trigger):
+                    # 处理提问，直接去掉触发词，不要求空格
+                    question = content[len(self.qa_trigger):].strip()
+                    if question:  # 确保问题不为空
+                        return self._process_question(question, chat_id, e_context, retry_count)
+                elif is_group and "总结" in content:
                     # 群聊中包含"总结"字样就触发
                     if chat_id in self.pending_messages:
                         cached_content = self.pending_messages[chat_id]["content"]
@@ -163,6 +180,14 @@ class JinaSum(Plugin):
         ]
         for k in expired_keys:
             del self.summary_cache[k]
+            
+        # 清理原文内容缓存
+        expired_keys = [
+            k for k, v in self.content_cache.items() 
+            if current_time - v["timestamp"] > self.content_cache_timeout
+        ]
+        for k in expired_keys:
+            del self.content_cache[k]
 
     def _process_summary(self, content: str, e_context: EventContext, retry_count: int = 0):
         """处理总结请求"""
@@ -201,10 +226,18 @@ class JinaSum(Plugin):
             response = requests.post(openai_chat_url, headers=openai_headers, json=openai_payload, timeout=60)
             response.raise_for_status()
             result = response.json()['choices'][0]['message']['content']
+            result += f"\n\n💡 您可以在5分钟内发送「{self.qa_trigger}xxx」来询问文章相关问题"
             
-            # 缓存总结结果
+            # 缓存总结结果和原文内容
             self.summary_cache[content] = {
                 "summary": result,
+                "timestamp": time.time()
+            }
+            
+            # 缓存原文内容用于后续问答
+            chat_id = e_context["context"].get("session_id", "default")
+            self.content_cache[chat_id] = {
+                "content": target_url_content,
                 "timestamp": time.time()
             }
             
@@ -220,6 +253,60 @@ class JinaSum(Plugin):
             e_context["reply"] = reply
             e_context.action = EventAction.BREAK_PASS
 
+    def _process_question(self, question: str, chat_id: str, e_context: EventContext, retry_count: int = 0):
+        """处理用户提问"""
+        try:
+            # 检查是否有可用的原文内容
+            if chat_id not in self.content_cache:
+                reply = Reply(ReplyType.ERROR, "抱歉，找不到相关的文章内容，请先发送链接并总结。")
+                e_context["reply"] = reply
+                e_context.action = EventAction.BREAK_PASS
+                return
+            
+            cache_data = self.content_cache[chat_id]
+            if time.time() - cache_data["timestamp"] > self.content_cache_timeout:
+                reply = Reply(ReplyType.ERROR, "抱歉，文章内容已过期，请重新发送链接并总结。")
+                e_context["reply"] = reply
+                e_context.action = EventAction.BREAK_PASS
+                return
+
+            if retry_count == 0:
+                reply = Reply(ReplyType.TEXT, "🤔 正在思考您的问题，请稍候...")
+                channel = e_context["channel"]
+                channel.send(reply, e_context["context"])
+
+            # 准备问答请求
+            openai_chat_url = self._get_openai_chat_url()
+            openai_headers = self._get_openai_headers()
+            
+            # 构建问答的 prompt
+            qa_prompt = self.qa_prompt.format(
+                content=cache_data["content"][:self.max_words],
+                question=question
+            )
+            
+            openai_payload = {
+                'model': self.open_ai_model,
+                'messages': [{"role": "user", "content": qa_prompt}]
+            }
+            
+            # 调用 API 获取回答
+            response = requests.post(openai_chat_url, headers=openai_headers, json=openai_payload, timeout=60)
+            response.raise_for_status()
+            answer = response.json()['choices'][0]['message']['content']
+            
+            reply = Reply(ReplyType.TEXT, answer)
+            e_context["reply"] = reply
+            e_context.action = EventAction.BREAK_PASS
+            
+        except Exception as e:
+            logger.error(f"[JinaSum] Error in processing question: {str(e)}")
+            if retry_count < 3:
+                return self._process_question(question, chat_id, e_context, retry_count + 1)
+            reply = Reply(ReplyType.ERROR, f"抱歉，处理您的问题时出错: {str(e)}")
+            e_context["reply"] = reply
+            e_context.action = EventAction.BREAK_PASS
+
     def get_help_text(self, verbose, **kwargs):
         help_text = "网页内容总结插件:\n"
         help_text += "1. 发送「总结 网址」可以总结指定网页的内容\n"
@@ -227,12 +314,13 @@ class JinaSum(Plugin):
         if self.auto_sum:
             help_text += "3. 群聊中分享消息默认自动总结"
             if self.black_group_list:
-                help_text += "（部分群组需要发送「总结」触发）\n"
+                help_text += "（部分群组需要发送包含「总结」的消息触发）\n"
             else:
                 help_text += "\n"
         else:
-            help_text += "3. 群聊中收到分享消息后，发送「总结」即可触发总结\n"
-            help_text += "注：群聊中的分享消息的总结请求需要在60秒内发出"
+            help_text += "3. 群聊中收到分享消息后，发送包含「总结」的消息即可触发总结\n"
+        help_text += f"4. 总结完成后5分钟内，可以发送「{self.qa_trigger}xxx」来询问文章相关问题\n"
+        help_text += "注：群聊中的分享消息的总结请求需要在60秒内发出"
         return help_text
 
     def _load_config_template(self):
