@@ -97,8 +97,8 @@ class JinaSum(Plugin):
             # 处理文本消息（用户触发总结）
             if context.type == ContextType.TEXT:
                 content = content.strip()
-                if is_group and content == "总结":
-                    # 群聊中的总结触发
+                if is_group and "总结" in content:
+                    # 群聊中包含"总结"字样就触发
                     if chat_id in self.pending_messages:
                         cached_content = self.pending_messages[chat_id]["content"]
                         del self.pending_messages[chat_id]
