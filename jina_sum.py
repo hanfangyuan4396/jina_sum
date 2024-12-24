@@ -234,9 +234,8 @@ class JinaSum(Plugin):
                 "timestamp": time.time()
             }
             
-            # 缓存原文内容用于后续问答
-            chat_id = e_context["context"].get("session_id", "default")
-            self.content_cache[chat_id] = {
+            # 使用原始URL作为key缓存原文内容
+            self.content_cache[content] = {
                 "content": target_url_content,
                 "timestamp": time.time()
             }
@@ -256,16 +255,19 @@ class JinaSum(Plugin):
     def _process_question(self, question: str, chat_id: str, e_context: EventContext, retry_count: int = 0):
         """处理用户提问"""
         try:
-            # 检查是否有可用的原文内容
-            if chat_id not in self.content_cache:
-                reply = Reply(ReplyType.ERROR, "抱歉，找不到相关的文章内容，请先发送链接并总结。")
-                e_context["reply"] = reply
-                e_context.action = EventAction.BREAK_PASS
-                return
+            # 获取最近总结的内容
+            recent_content = None
+            recent_timestamp = 0
             
-            cache_data = self.content_cache[chat_id]
-            if time.time() - cache_data["timestamp"] > self.content_cache_timeout:
-                reply = Reply(ReplyType.ERROR, "抱歉，文章内容已过期，请重新发送链接并总结。")
+            # 遍历所有缓存找到最近总结的内容
+            for url, cache_data in self.content_cache.items():
+                if cache_data["timestamp"] > recent_timestamp:
+                    recent_timestamp = cache_data["timestamp"]
+                    recent_content = cache_data["content"]
+            
+            if not recent_content or time.time() - recent_timestamp > self.content_cache_timeout:
+                logger.debug(f"[JinaSum] No valid content cache found or content expired")
+                reply = Reply(ReplyType.ERROR, "抱歉，找不到相关的文章内容或内容已过期，请重新发送链接并总结。")
                 e_context["reply"] = reply
                 e_context.action = EventAction.BREAK_PASS
                 return
@@ -281,7 +283,7 @@ class JinaSum(Plugin):
             
             # 构建问答的 prompt
             qa_prompt = self.qa_prompt.format(
-                content=cache_data["content"][:self.max_words],
+                content=recent_content[:self.max_words],
                 question=question
             )
             
