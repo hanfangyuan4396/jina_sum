@@ -63,7 +63,7 @@ class JinaSum(Plugin):
             for key, default_value in self.DEFAULT_CONFIG.items():
                 setattr(self, key, self.config.get(key, default_value))
             
-            # 验证必要的配置
+            # 验证必��的配置
             if not self.open_ai_api_key:
                 raise ValueError("OpenAI API key is required")
             
@@ -120,6 +120,7 @@ class JinaSum(Plugin):
                         cached_content = self.pending_messages[chat_id]["content"]
                         del self.pending_messages[chat_id]
                         return self._process_summary(cached_content, e_context, retry_count)
+                    return  # 没有待总结的文章，让后续插件处理
                 elif content.startswith("总结 "):
                     # 处理"总结 URL"格式
                     url = content[3:].strip()
@@ -267,11 +268,8 @@ class JinaSum(Plugin):
             
             if not recent_content or time.time() - recent_timestamp > self.content_cache_timeout:
                 logger.debug(f"[JinaSum] No valid content cache found or content expired")
-                reply = Reply(ReplyType.ERROR, "抱歉，找不到相关的文章内容或内容已过期，请重新发送链接并总结。")
-                e_context["reply"] = reply
-                e_context.action = EventAction.BREAK_PASS
-                return
-
+                return  # 找不到相关文章，让后续插件处理问题
+            
             if retry_count == 0:
                 reply = Reply(ReplyType.TEXT, "🤔 正在思考您的问题，请稍候...")
                 channel = e_context["channel"]
