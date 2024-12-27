@@ -88,58 +88,36 @@ class JinaSum(Plugin):
             # 生成消息的唯一标识
             chat_id = context.get("session_id", "default")
             
-            # 清理过期的缓存
-            self._clean_expired_cache()
+            logger.debug(f"[JinaSum] Received message: type={context.type}, content={content}, is_group={is_group}")
             
             # 检查是否需要自动总结
             should_auto_sum = self.auto_sum
-            if is_group and msg.from_user_nickname in self.black_group_list:
+            if should_auto_sum and is_group and msg.from_user_nickname in self.black_group_list:
                 should_auto_sum = False
-                logger.debug(f"[JinaSum] {msg.from_user_nickname} is in black group list, auto sum disabled")
+            logger.debug(f"[JinaSum] Auto sum status: {should_auto_sum}")
 
             # 处理分享消息
             if context.type == ContextType.SHARING:
-                logger.debug(f"[JinaSum] Processing sharing message: auto_sum={should_auto_sum}")
+                logger.debug("[JinaSum] Processing SHARING message")
                 if is_group:
                     if should_auto_sum:
-                        # 自动总结开启且不在黑名单中，直接处理
-                        logger.debug(f"[JinaSum] Auto processing group message: {content}")
                         return self._process_summary(content, e_context, retry_count)
                     else:
-                        # 自动总结关闭或在黑名单中，缓存消息等待触发
                         self.pending_messages[chat_id] = {
                             "content": content,
                             "timestamp": time.time()
                         }
-                        logger.debug(f"[JinaSum] Cached group message: {content}, chat_id={chat_id}")
+                        logger.debug(f"[JinaSum] Cached SHARING message: {content}, chat_id={chat_id}")
                         return
+                else:  # 单聊消息直接处理
+                    return self._process_summary(content, e_context, retry_count)
 
-            # 处理文本消息（用户触发总结或提问）
+            # 处理文本消息
             elif context.type == ContextType.TEXT:
+                logger.debug("[JinaSum] Processing TEXT message")
                 content = content.strip()
                 
-                # 检查是否包含"总结"关键词，不管是否有@
-                if is_group and "总结" in content:
-                    logger.debug(f"[JinaSum] Found summary trigger in group chat, pending_messages: {self.pending_messages}")
-                    if chat_id in self.pending_messages:
-                        cached_content = self.pending_messages[chat_id]["content"]
-                        logger.debug(f"[JinaSum] Found cached content: {cached_content}")
-                        del self.pending_messages[chat_id]
-                        return self._process_summary(cached_content, e_context, retry_count)
-                    logger.debug("[JinaSum] No pending messages found for summary")
-                    return
-                
-                # 检查是否是追问，不管是否有@
-                if self.qa_trigger in content:
-                    # 找到问号后的内容
-                    parts = content.split(self.qa_trigger, 1)
-                    if len(parts) > 1:
-                        question = parts[1].strip()
-                        if question:  # 确保问题不为空
-                            return self._process_question(question, chat_id, e_context, retry_count)
-                    return
-                
-                # 移除可能的@信息，仅用于处理直接总结URL
+                # 移除可能的@信息
                 if content.startswith("@"):
                     parts = content.split(" ", 1)
                     if len(parts) > 1:
@@ -147,15 +125,35 @@ class JinaSum(Plugin):
                     else:
                         content = ""
                 
-                # 处理"总结 URL"格式
-                if content.startswith("总结 "):
-                    url = content[3:].strip()
-                    if url:  # 确保URL不为空
-                        if chat_id in self.pending_messages:
-                            del self.pending_messages[chat_id]
+                # 检查是否包含"总结"关键词（仅群聊需要）
+                if is_group and "总结" in content:
+                    logger.debug(f"[JinaSum] Found summary trigger, pending_messages={self.pending_messages}")
+                    if chat_id in self.pending_messages:
+                        cached_content = self.pending_messages[chat_id]["content"]
+                        logger.debug(f"[JinaSum] Processing cached content: {cached_content}")
+                        del self.pending_messages[chat_id]
+                        return self._process_summary(cached_content, e_context, retry_count)
+                    
+                    # 检查是否是直接URL总结，移除"总结"并检查剩余内容是否为URL
+                    url = content.replace("总结", "").strip()
+                    if url and self._check_url(url):
+                        logger.debug(f"[JinaSum] Processing direct URL: {url}")
                         return self._process_summary(url, e_context, retry_count)
+                    logger.debug("[JinaSum] No content to summarize")
                     return
+                
+                # 检查是否是追问
+                if self.qa_trigger in content:
+                    logger.debug(f"[JinaSum] Found QA trigger: {content}")
+                    question = content.replace(self.qa_trigger, "", 1).strip()
+                    if question:  # 确保问题不为空
+                        return self._process_question(question, chat_id, e_context, retry_count)
 
+                # 单聊中直接处理URL
+                if not is_group and self._check_url(content):
+                    return self._process_summary(content, e_context, retry_count)
+
+            logger.debug("[JinaSum] Message not handled")
             return
 
         except Exception as e:
@@ -313,7 +311,7 @@ class JinaSum(Plugin):
         if self.auto_sum:
             help_text += "3. 群聊中分享消息默认自动总结"
             if self.black_group_list:
-                help_text += "（部分群组需要发送包含「总结」的消息触发）\n"
+                help_text += "（部分群组需要发送含「总结」的消息触发）\n"
             else:
                 help_text += "\n"
         else:
