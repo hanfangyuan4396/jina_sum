@@ -18,8 +18,8 @@ from plugins import *
     desire_priority=10,
     hidden=False,
     desc="Sum url link content with jina reader and llm",
-    version="0.0.1",
-    author="hanfangyuan",
+    version="1.0.1",
+    author="sofs2005",
 )
 class JinaSum(Plugin):
     """网页内容总结插件
@@ -63,7 +63,7 @@ class JinaSum(Plugin):
             for key, default_value in self.DEFAULT_CONFIG.items():
                 setattr(self, key, self.config.get(key, default_value))
             
-            # 验证必��的配置
+            # 验证必置
             if not self.open_ai_api_key:
                 raise ValueError("OpenAI API key is required")
             
@@ -94,43 +94,12 @@ class JinaSum(Plugin):
             # 检查是否需要自动总结
             should_auto_sum = self.auto_sum
             if is_group and msg.from_user_nickname in self.black_group_list:
-                # 黑名单群组强制关闭自动总结
                 should_auto_sum = False
                 logger.debug(f"[JinaSum] {msg.from_user_nickname} is in black group list, auto sum disabled")
 
-            # 处理文本消息（用户触发总结或提问）
-            if context.type == ContextType.TEXT:
-                content = content.strip()
-                # 移除可能的@信息
-                if content.startswith("@"):
-                    parts = content.split(" ", 1)
-                    if len(parts) > 1:
-                        content = parts[1].strip()
-                    else:
-                        content = ""
-                
-                if content.startswith(self.qa_trigger):
-                    # 处理提问，直接去掉触发词，不要求空格
-                    question = content[len(self.qa_trigger):].strip()
-                    if question:  # 确保问题不为空
-                        return self._process_question(question, chat_id, e_context, retry_count)
-                elif is_group and "总结" in content:
-                    # 群聊中包含"总结"字样就触发
-                    if chat_id in self.pending_messages:
-                        cached_content = self.pending_messages[chat_id]["content"]
-                        del self.pending_messages[chat_id]
-                        return self._process_summary(cached_content, e_context, retry_count)
-                    return  # 没有待总结的文章，让后续插件处理
-                elif content.startswith("总结 "):
-                    # 处理"总结 URL"格式
-                    url = content[3:].strip()
-                    if chat_id in self.pending_messages:
-                        del self.pending_messages[chat_id]
-                    return self._process_summary(url, e_context, retry_count)
-                return
-
             # 处理分享消息
-            elif context.type == ContextType.SHARING:
+            if context.type == ContextType.SHARING:
+                logger.debug(f"[JinaSum] Processing sharing message: auto_sum={should_auto_sum}")
                 if is_group:
                     if should_auto_sum:
                         # 自动总结开启且不在黑名单中，直接处理
@@ -142,26 +111,52 @@ class JinaSum(Plugin):
                             "content": content,
                             "timestamp": time.time()
                         }
-                        logger.debug(f"[JinaSum] Cached group message: {content}")
+                        logger.debug(f"[JinaSum] Cached group message: {content}, chat_id={chat_id}")
                         return
-                else:
-                    # 单聊：直接处理
-                    logger.debug(f"[JinaSum] Processing private chat message: {content}")
+
+            # 处理文本消息（用户触发总结或提问）
+            elif context.type == ContextType.TEXT:
+                content = content.strip()
+                
+                # 检查是否包含"总结"关键词，不管是否有@
+                if is_group and "总结" in content:
+                    logger.debug(f"[JinaSum] Found summary trigger in group chat, pending_messages: {self.pending_messages}")
                     if chat_id in self.pending_messages:
+                        cached_content = self.pending_messages[chat_id]["content"]
+                        logger.debug(f"[JinaSum] Found cached content: {cached_content}")
                         del self.pending_messages[chat_id]
-                    return self._process_summary(content, e_context, retry_count)
-            
+                        return self._process_summary(cached_content, e_context, retry_count)
+                    logger.debug("[JinaSum] No pending messages found for summary")
+                    return
+                
+                # 移除可能的@信息，仅用于处理问答和直接总结URL
+                if content.startswith("@"):
+                    parts = content.split(" ", 1)
+                    if len(parts) > 1:
+                        content = parts[1].strip()
+                    else:
+                        content = ""
+                
+                if content.startswith(self.qa_trigger):
+                    # 处理提问
+                    question = content[len(self.qa_trigger):].strip()
+                    if question:  # 确保问题不为空
+                        return self._process_question(question, chat_id, e_context, retry_count)
+                    return
+                elif content.startswith("总结 "):
+                    # 处理"总结 URL"格式
+                    url = content[3:].strip()
+                    if url:  # 确保URL不为空
+                        if chat_id in self.pending_messages:
+                            del self.pending_messages[chat_id]
+                        return self._process_summary(url, e_context, retry_count)
+                    return
+
             return
 
         except Exception as e:
-            logger.error(f"[JinaSum] Error: {str(e)}")
-            if chat_id in self.pending_messages:
-                del self.pending_messages[chat_id]
-            if retry_count < 3:
-                return self.on_handle_context(e_context, retry_count + 1)
-            reply = Reply(ReplyType.ERROR, f"处理失败: {str(e)}")
-            e_context["reply"] = reply
-            e_context.action = EventAction.BREAK_PASS
+            logger.error(f"[JinaSum] Error in on_handle_context: {str(e)}")
+            return
 
     def _clean_expired_cache(self):
         """清理过期的缓存"""
@@ -197,7 +192,7 @@ class JinaSum(Plugin):
                 logger.debug(f"[JinaSum] {content} is not a valid url, skip")
                 return
                 
-            # 检查缓存
+            # 检缓存
             if content in self.summary_cache:
                 cache_data = self.summary_cache[content]
                 if time.time() - cache_data["timestamp"] <= self.summary_cache_timeout:
@@ -249,7 +244,7 @@ class JinaSum(Plugin):
             logger.error(f"[JinaSum] Error in processing summary: {str(e)}")
             if retry_count < 3:
                 return self._process_summary(content, e_context, retry_count + 1)
-            reply = Reply(ReplyType.ERROR, f"无法获取或总结该内容: {str(e)}")
+            reply = Reply(ReplyType.ERROR, f"无法获取���总结该内容: {str(e)}")
             e_context["reply"] = reply
             e_context.action = EventAction.BREAK_PASS
 
