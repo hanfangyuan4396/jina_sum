@@ -21,6 +21,8 @@ config.json 配置说明
 }
 ```
 
+为了尽可能减少用户的配置与使用成本，本仓库只提供了简单链接总结功能，如需要配置追问、总结群聊名单等功能，可以使用 https://github.com/sofs2005/jina_sum
+
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=hanfangyuan4396/jina_sum&type=Date)](https://star-history.com/#hanfangyuan4396/jina_sum&Date)
